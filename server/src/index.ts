@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import * as GtfsRealtimeBindings from "gtfs-realtime-bindings";
+import { loadStops, nearbyStops, type Stop } from "./stops";
 
 const VEHICLES_URL =
   "http://webapps.regionofwaterloo.ca/api/grt-routes/api/vehiclepositions";
@@ -26,7 +27,7 @@ async function refreshVehicles() {
     lastUpdated = Date.now();
     return;
   }
-  
+
   try {
     const res = await fetch(VEHICLES_URL);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -80,6 +81,14 @@ function mockVehicles(): Vehicle[] {
         
 
 
+let stops: Stop[] = [];
+try {
+    stops = loadStops();
+    console.log(`Loaded ${stops.length} stops`);
+} catch (err) {
+    console.error("Could not load stops.txt. Did you download the GTFS data?", err);
+}
+
 const app = express();
 app.use(cors());
 
@@ -87,6 +96,19 @@ app.get("/api/vehicles", (req, res) => {
   const route = req.query.route as string | undefined;
   const data = route ? vehicles.filter((v) => v.routeId === route) : vehicles;
   res.json({ lastUpdated, count: data.length, vehicles: data });
+});
+
+app.get("/api/stops/nearby", (req, res) =>{
+    const lat = parseFloat(req.query.lat as string);
+    const lon = parseFloat(req.query.lon as string);
+    const radius = Math.min(parseFloat((req.query.radius as string) ?? "500") || 500, 2000);
+
+    if(!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        res.status(400).json({ erro: "Lat and lon are required numbers"});
+        return;
+    }
+
+    res.json({ stops: nearbyStops(stops, lat, lon, radius) });
 });
 
 app.listen(PORT, () => {

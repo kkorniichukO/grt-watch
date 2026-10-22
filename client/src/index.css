@@ -30,3 +30,19 @@ html, body, #root {
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.3);
   font-size: 14px;
 }
+
+.stop-maker {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #1d4ed8;
+  border: 2px solid white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+
+.toolbar button {
+  margin-top: 6px;
+  padding: 4px 10 pc;
+  cursor: pointer;
+}
