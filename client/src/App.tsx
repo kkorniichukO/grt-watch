@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
+
+// MapLibre 6 needs to be told where its tile-parsing worker lives
+maplibregl.setWorkerUrl(maplibreWorkerUrl);
 
 type Vehicle = {
   id: string;
@@ -23,6 +27,56 @@ const API = "http://localhost:3001/api";
 const POLL_MS = 5000;
 const WATERLOO: [number, number] = [-80.5204, 43.4643]; // [lon, lat]
 
+type Departure = { 
+  route: string;
+  headsign: string;
+  time: string;
+  inMinutes: number;
+};
+type DeparturesResponse = {
+  noService: boolean;
+  coverage: { first: string; last: string };
+  departures: Departure[];
+};
+
+async function fillPopup(stop: Stop, box: HTMLElement) {
+  box.replaceChildren();
+  const title = document.createElement("strong");
+  title.textContent = `${stop.name} (#${stop.id})`;
+  const body = document.createElement("div");
+  body.style.marginTop = "6px";
+  body.textContent = "Loading departures...";
+  box.append(title, body);
+
+  try {
+    const res = await fetch(`${API}/stops/${encodeURIComponent(stop.id)}/departures?date=20260218&time=08:00`);
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data: DeparturesResponse = await res.json();
+    body.replaceChildren();
+
+    if(data.departures.length === 0){
+      body.textContent = data.noService 
+      ? `No schedule data for todate (the loaded data covers ${data.coverage.first} to ${data.coverage.last})`
+      : "No more scheduled departures today";
+
+      return;
+    }
+
+    for(const d of data.departures) {
+      const row = document.createElement("div");
+      row.textContent = `${d.time}  ·  ${d.route} ${d.headsign}  (${d.inMinutes} min)`;
+      body.appendChild(row);
+    }
+
+    const note = document.createElement("div");
+    note.style.cssText = "margine-top:6px;font-size:11px;colore:#666";
+    note.textContent = "Schedule time, not live";
+    body.appendChild(note);
+  } catch {
+    body.textContent = "Couldn't load departures";
+  }
+}
+
 export default function App() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -40,22 +94,28 @@ export default function App() {
     if (!mapContainer.current) return;
     const map = new maplibregl.Map({
       container: mapContainer.current,
-      style: {
-        version: 8,
-        sources: {
-          osm: {
-            type: "raster",
-            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-            tileSize: 256,
-            attribution: "© OpenStreetMap contributors",
-          },
-        },
-        layers: [{ id: "osm", type: "raster", source: "osm" }],
-      },
+      style: "https://tiles.openfreemap.org/styles/positron",
       center: WATERLOO,
       zoom: 12,
     });
     map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+    // Keep only road-name labels; hide shops, parks, churches, towns, etc.
+    map.on("load", () => {
+      const layers = map.getStyle().layers ?? [];
+      const keep =
+        /(road|highway|street).*(name|label)|(name|label).*(road|highway|street)/i;
+      for (const layer of layers) {
+        if (layer.type === "symbol" && !keep.test(layer.id)) {
+          map.setLayoutProperty(layer.id, "visibility", "none");
+        }
+      }
+      console.log(
+        "Symbol layers:",
+        layers.filter((l) => l.type === "symbol").map((l) => l.id)
+      );
+    });
+
     mapRef.current = map;
     return () => {
       map.remove();
@@ -134,9 +194,10 @@ export default function App() {
       for (const s of data.stops) {
         const el = document.createElement("div");
         el.className = "stop-marker";
-        const popup = new maplibregl.Popup({ offset: 12 }).setText(
-          `${s.name} (#${s.id}) · ${s.distance} m`
-        );
+        const box = document.createElement("div");
+        const popup = new maplibregl.Popup({ offset: 12, maxWidth: "280px" })
+          .setDOMContent(box);
+        popup.on("open", () => fillPopup(s, box));
         const marker = new maplibregl.Marker({ element: el })
           .setLngLat([s.lon, s.lat])
           .setPopup(popup)

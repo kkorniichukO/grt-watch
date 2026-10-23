@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import * as GtfsRealtimeBindings from "gtfs-realtime-bindings";
 import { loadStops, nearbyStops, type Stop } from "./stops";
+import { loadSchedule, departuresAt, toSeconds, type Schedule } from "./schedule.js";
 
 const VEHICLES_URL =
   "http://webapps.regionofwaterloo.ca/api/grt-routes/api/vehiclepositions";
@@ -89,6 +90,37 @@ try {
     console.error("Could not load stops.txt. Did you download the GTFS data?", err);
 }
 
+let schedule: Schedule | null = null;
+
+try{
+    schedule = loadSchedule();
+    console.log(
+        `Loaded schedule: ${schedule.routes.size} trips, service dates ${schedule.firstDate}-${schedule.lastDate}`
+    );
+} catch (err){
+    console.warn("Could not load schedule files.", err);
+}
+
+function torontoNow() {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Toronto",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hourCycle: "h23",
+    }).formatToParts(new Date());
+
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "0";
+
+    return {
+        date: `${get("year")}${get("month")}${get("day")}`,
+        time: Number(get("hour")) * 3600 + Number(get("minute")) * 60 + Number(get("second")),
+    }
+}
+
 const app = express();
 app.use(cors());
 
@@ -109,6 +141,28 @@ app.get("/api/stops/nearby", (req, res) =>{
     }
 
     res.json({ stops: nearbyStops(stops, lat, lon, radius) });
+});
+
+app.get("/api/stops/:id/departures", (req, res) => {
+    if(!schedule) {
+        res.status(503).json({ error: "Schedule data not loaded" });
+        return;
+    }
+
+    const now = torontoNow();
+    const dateParam = String(req.query.date ?? "");
+    const timeParam = String(req.query.time ?? "");
+    const date =  /^\d{8}$/.test(dateParam) ? dateParam : now.date;
+    const nowSec = /^\d{1,2}:\d{2}$/.test(timeParam) ? toSeconds(timeParam) : now.time;
+
+    const noService = !(schedule.services.get(date)?.size);
+    res.json({
+        stopId: String(req.params.id),
+        date,
+        noService,
+        coverage: {first: schedule.firstDate, last: schedule.lastDate},
+        departures: departuresAt(schedule, String(req.params.id), date, nowSec),
+    });
 });
 
 app.listen(PORT, () => {

@@ -31,7 +31,7 @@ html, body, #root {
   font-size: 14px;
 }
 
-.stop-maker {
+.stop-marker {
   width: 12px;
   height: 12px;
   border-radius: 50%;
@@ -43,6 +43,6 @@ html, body, #root {
 
 .toolbar button {
   margin-top: 6px;
-  padding: 4px 10 pc;
+  padding: 4px 10px;
   cursor: pointer;
 }
