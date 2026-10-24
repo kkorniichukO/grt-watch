@@ -143,7 +143,7 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  // 3. Draw/update bus markers
+  // 3a. Draw/update bus markers
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -175,6 +175,72 @@ export default function App() {
       }
     }
   }, [vehicles, route]);
+
+  // 3b. Draw the selected route's path as a line
+  useEffect(() => {
+    const map = mapRef.current;
+    if(!map) return;
+    let cancelled = false;
+
+    type LineFeature = {
+      type: "Feature";
+      properties: Record<string, never>;
+      geometry: { type: "LineString"; coordinates: number[][]};
+    };
+
+    async function draw() {
+      const features: LineFeature[] = [];
+
+      if(route !== "all") {
+        try {
+          const res = await fetch(`${API}/routes/${encodeURIComponent(route)}/shapes`);
+          const data : {shapes: number[][][]} = await res.json();
+
+          for(const coordinates of data.shapes) {
+            features.push({
+              type: "Feature",
+              properties: {},
+              geometry: {
+                type: "LineString",
+                coordinates,
+              },
+            });
+            }
+        } catch {
+          // leave the line empty if the request fails
+        }
+      }
+      if (cancelled || !mapRef.current) return;
+      const collection = { type: "FeatureCollection" as const, features };
+
+      const apply = () => {
+        const src = map!.getSource("route-line") as maplibregl.GeoJSONSource | undefined;
+
+        if(src){
+          src.setData(collection);
+          return;
+        }
+
+        map!.addSource("route-line", { type: "geojson", data: collection });
+        map!.addLayer({
+          id: "route-line",
+          type: "line",
+          source: "route-line",
+          paint: { "line-color": "#d62828", "line-width": 4, "line-opacity": 0.7 },
+        });
+      };
+      try {
+        apply();
+      } catch {
+        map!.once("load", apply);
+      }
+    }
+    draw();
+    return () => {
+      cancelled = true;
+    };
+  }, [route]);
+  
 
   // 4. Find stops near a point and draw them
   async function showStopsNear(lat: number, lon: number, isYou: boolean) {
@@ -249,7 +315,9 @@ export default function App() {
           Route:{" "}
           <select value={route} onChange={(e) => setRoute(e.target.value)}>
             <option value="all">All routes</option>
-            {routes.sort().map((r) => (
+            {routes
+              .sort((a,b) => a.localeCompare(b, undefined, {numeric: true}))
+              .map((r) => (
               <option key={r} value={r}>
                 {r}
               </option>

@@ -3,6 +3,7 @@ import cors from "cors";
 import * as GtfsRealtimeBindings from "gtfs-realtime-bindings";
 import { loadStops, nearbyStops, type Stop } from "./stops";
 import { loadSchedule, departuresAt, toSeconds, type Schedule } from "./schedule.js";
+import { loadRoutePaths, simulateBuses, type RoutePath } from "./shapes.js";
 
 const VEHICLES_URL =
   "http://webapps.regionofwaterloo.ca/api/grt-routes/api/vehiclepositions";
@@ -24,7 +25,7 @@ let lastUpdated: number | null = null;
 
 async function refreshVehicles() {
   if (USE_MOCK) {
-    vehicles = mockVehicles();
+    vehicles = paths.length > 0 ? simulateBuses(paths, Date.now()) : mockVehicles();
     lastUpdated = Date.now();
     return;
   }
@@ -121,14 +122,31 @@ function torontoNow() {
     }
 }
 
+let paths: RoutePath[] = [];
+try {
+    paths = loadRoutePaths();
+    console.log(`Loaded ${paths.length} route paths`);
+} catch (err) {
+    console.warn("Could not load route shapes.", err);
+}
+
 const app = express();
 app.use(cors());
 
+
 app.get("/api/vehicles", (req, res) => {
-  const route = req.query.route as string | undefined;
-  const data = route ? vehicles.filter((v) => v.routeId === route) : vehicles;
-  res.json({ lastUpdated, count: data.length, vehicles: data });
+    const route = req.query.route as string | undefined;
+    const data = route ? vehicles.filter((v) => v.routeId === route) : vehicles;
+    res.json({ lastUpdated, count: data.length, vehicles: data });
 });
+
+app.get("/api/routes/:id/shapes", (req, res) => {
+    const id = String(req.params.id);
+    const shapes = paths
+        .filter((p) => p.routeId === id)
+        .map((p) => p.points.map((pt) => [pt.lon, pt.lat]));
+    res.json({ shapes });
+  });
 
 app.get("/api/stops/nearby", (req, res) =>{
     const lat = parseFloat(req.query.lat as string);
