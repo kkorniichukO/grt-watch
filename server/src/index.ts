@@ -4,10 +4,11 @@ import * as GtfsRealtimeBindings from "gtfs-realtime-bindings";
 import { loadStops, nearbyStops, type Stop } from "./stops";
 import { loadSchedule, departuresAt, toSeconds, type Schedule } from "./schedule.js";
 import { loadRoutePaths, simulateBuses, type RoutePath } from "./shapes.js";
+import { fetchBuffer } from "./grtFetch.js";
 
 const VEHICLES_URL =
-  "http://webapps.regionofwaterloo.ca/api/grt-routes/api/vehiclepositions";
-const USE_MOCK = true; // set to false to use the real GRT feed
+  "https://webapps.regionofwaterloo.ca/api/grt-routes/api/vehiclepositions/2";
+const USE_MOCK = false; // set to false to use the real GRT feed
 const POLL_MS = USE_MOCK ? 3_000 : 15_000;
 const PORT = 3001;
 
@@ -18,45 +19,50 @@ type Vehicle = {
   lat: number;
   lon: number;
   bearing: number | null;
+  timestamp?: number | null;
 };
 
 let vehicles: Vehicle[] = [];
 let lastUpdated: number | null = null;
+const MAX_AGE_S = 300;
+let feedTimestamp: number | null = null;
 
 async function refreshVehicles() {
-  if (USE_MOCK) {
-    vehicles = paths.length > 0 ? simulateBuses(paths, Date.now()) : mockVehicles();
-    lastUpdated = Date.now();
-    return;
+    if (USE_MOCK) {
+      vehicles = paths.length > 0 ? simulateBuses(paths, Date.now()) : mockVehicles();
+      lastUpdated = Date.now();
+      return;
+    }
+    try {
+      const buffer = await fetchBuffer(VEHICLES_URL);
+      const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(buffer);
+  
+      feedTimestamp = feed.header.timestamp ? Number(feed.header.timestamp) : null;
+      const nowS = Date.now() / 1000;
+  
+      const all: Vehicle[] = feed.entity.flatMap((e) => {
+        const v = e.vehicle;
+        if (!v?.position) return [];
+        return [
+          {
+            id: v.vehicle?.id ?? e.id,
+            routeId: v.trip?.routeId ?? null,
+            tripId: v.trip?.tripId ?? null,
+            lat: v.position.latitude,
+            lon: v.position.longitude,
+            bearing: v.position.bearing ?? null,
+            timestamp: Number(v.timestamp ?? feedTimestamp ?? 0),
+          },
+        ];
+      });
+  
+      vehicles = all.filter((v) => v.timestamp && nowS - v.timestamp <= MAX_AGE_S);
+      lastUpdated = Date.now();
+      console.log(`Updated: ${vehicles.length} fresh of ${all.length} vehicles in feed`);
+    } catch (err) {
+      console.error("Failed to refresh vehicles:", err);
+    }
   }
-
-  try {
-    const res = await fetch(VEHICLES_URL);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    const buffer = new Uint8Array(await res.arrayBuffer());
-    const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(buffer);
-
-    vehicles = feed.entity.flatMap((e) => {
-      const v = e.vehicle;
-      if (!v?.position) return [];
-      return [
-        {
-          id: v.vehicle?.id ?? e.id,
-          routeId: v.trip?.routeId ?? null,
-          tripId: v.trip?.tripId ?? null,
-          lat: v.position.latitude,
-          lon: v.position.longitude,
-          bearing: v.position.bearing ?? null,
-        },
-      ];
-    });
-    lastUpdated = Date.now();
-    console.log(`Updated: ${vehicles.length} vehicles`);
-  } catch (err) {
-    console.error("Failed to refresh vehicles:", err);
-  }
-}
 
 function mockVehicles(): Vehicle[] {
     const t = Date.now() / 1000;
@@ -137,7 +143,13 @@ app.use(cors());
 app.get("/api/vehicles", (req, res) => {
     const route = req.query.route as string | undefined;
     const data = route ? vehicles.filter((v) => v.routeId === route) : vehicles;
-    res.json({ lastUpdated, count: data.length, vehicles: data });
+    res.json({ 
+        lastUpdated,
+        feedTimestamp,
+        mock: USE_MOCK, 
+        count: data.length, 
+        vehicles: data,
+    });
 });
 
 app.get("/api/routes/:id/shapes", (req, res) => {

@@ -23,21 +23,26 @@ type Stop = {
   distance: number;
 };
 
-const API = "http://localhost:3001/api";
-const POLL_MS = 5000;
-const WATERLOO: [number, number] = [-80.5204, 43.4643]; // [lon, lat]
-
-type Departure = { 
+type Departure = {
   route: string;
   headsign: string;
   time: string;
   inMinutes: number;
 };
+
 type DeparturesResponse = {
   noService: boolean;
   coverage: { first: string; last: string };
   departures: Departure[];
 };
+
+const API = "http://localhost:3001/api";
+const POLL_MS = 5000;
+const WATERLOO: [number, number] = [-80.5204, 43.4643]; // [lon, lat]
+
+// Leave empty to use today's date and time.
+// While testing with an old timetable, use: "?date=20260218&time=08:00"
+const DEPARTURES_QUERY = "?time=08:00";
 
 async function fillPopup(stop: Stop, box: HTMLElement) {
   box.replaceChildren();
@@ -49,31 +54,30 @@ async function fillPopup(stop: Stop, box: HTMLElement) {
   box.append(title, body);
 
   try {
-    const res = await fetch(`${API}/stops/${encodeURIComponent(stop.id)}/departures?date=20260218&time=08:00`);
-    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    const res = await fetch(
+      `${API}/stops/${encodeURIComponent(stop.id)}/departures${DEPARTURES_QUERY}`
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: DeparturesResponse = await res.json();
     body.replaceChildren();
 
-    if(data.departures.length === 0){
-      body.textContent = data.noService 
-      ? `No schedule data for todate (the loaded data covers ${data.coverage.first} to ${data.coverage.last})`
-      : "No more scheduled departures today";
-
+    if (data.departures.length === 0) {
+      body.textContent = data.noService
+        ? `No schedule data for today (the loaded data covers ${data.coverage.first} to ${data.coverage.last}).`
+        : "No more scheduled departures today.";
       return;
     }
-
-    for(const d of data.departures) {
+    for (const d of data.departures) {
       const row = document.createElement("div");
       row.textContent = `${d.time}  ·  ${d.route} ${d.headsign}  (${d.inMinutes} min)`;
       body.appendChild(row);
     }
-
     const note = document.createElement("div");
-    note.style.cssText = "margine-top:6px;font-size:11px;colore:#666";
-    note.textContent = "Schedule time, not live";
+    note.style.cssText = "margin-top:6px;font-size:11px;color:#666";
+    note.textContent = "Scheduled times, not live";
     body.appendChild(note);
   } catch {
-    body.textContent = "Couldn't load departures";
+    body.textContent = "Couldn't load departures.";
   }
 }
 
@@ -88,6 +92,7 @@ export default function App() {
   const [route, setRoute] = useState("all");
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [feedNote, setFeedNote] = useState<string | null>(null);
 
   // 1. Create the map once
   useEffect(() => {
@@ -133,6 +138,25 @@ export default function App() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         setVehicles(data.vehicles);
+
+        if (data.mock) {
+          setFeedNote("Demo mode: simulated buses");
+        } else if (!data.feedTimestamp) {
+          setFeedNote("Waiting for live data...");
+        } else {
+          const ageMin = Math.round(
+            (Date.now() / 1000 - data.feedTimestamp) / 60
+          );
+          setFeedNote(
+            ageMin > 5
+              ? `Live feed is ${
+                  ageMin >= 120
+                    ? Math.round(ageMin / 60) + " hours"
+                    : ageMin + " min"
+                } old, so no buses are shown`
+              : "Live"
+          );
+        }
         setError(null);
       } catch {
         setError("Can't reach the API. Is the server running?");
@@ -143,7 +167,7 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  // 3a. Draw/update bus markers
+  // 3. Draw/update bus markers
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -178,69 +202,73 @@ export default function App() {
 
   // 3b. Draw the selected route's path as a line
   useEffect(() => {
-    const map = mapRef.current;
-    if(!map) return;
+    const found = mapRef.current;
+    if (!found) return;
+    const map: maplibregl.Map = found;
     let cancelled = false;
 
-    type LineFeature = {
-      type: "Feature";
-      properties: Record<string, never>;
-      geometry: { type: "LineString"; coordinates: number[][]};
-    };
-
     async function draw() {
-      const features: LineFeature[] = [];
-
-      if(route !== "all") {
+      let shapes: number[][][] = [];
+      if (route !== "all") {
         try {
-          const res = await fetch(`${API}/routes/${encodeURIComponent(route)}/shapes`);
-          const data : {shapes: number[][][]} = await res.json();
-
-          for(const coordinates of data.shapes) {
-            features.push({
-              type: "Feature",
-              properties: {},
-              geometry: {
-                type: "LineString",
-                coordinates,
-              },
-            });
-            }
-        } catch {
-          // leave the line empty if the request fails
+          const res = await fetch(
+            `${API}/routes/${encodeURIComponent(route)}/shapes`
+          );
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data: { shapes: number[][][] } = await res.json();
+          shapes = data.shapes;
+        } catch (err) {
+          console.error("Route shape request failed:", err);
         }
       }
-      if (cancelled || !mapRef.current) return;
-      const collection = { type: "FeatureCollection" as const, features };
+      if (cancelled) return;
+
+      const collection = {
+        type: "FeatureCollection" as const,
+        features: shapes.map((coordinates) => ({
+          type: "Feature" as const,
+          properties: {},
+          geometry: { type: "LineString" as const, coordinates },
+        })),
+      };
 
       const apply = () => {
-        const src = map!.getSource("route-line") as maplibregl.GeoJSONSource | undefined;
-
-        if(src){
+        const src = map.getSource("route-line") as
+          | maplibregl.GeoJSONSource
+          | undefined;
+        if (src) {
           src.setData(collection);
           return;
         }
-
-        map!.addSource("route-line", { type: "geojson", data: collection });
-        map!.addLayer({
+        map.addSource("route-line", { type: "geojson", data: collection });
+        map.addLayer({
           id: "route-line",
           type: "line",
           source: "route-line",
-          paint: { "line-color": "#d62828", "line-width": 4, "line-opacity": 0.7 },
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: {
+            "line-color": "#d62828",
+            "line-width": 4,
+            "line-opacity": 0.7,
+          },
         });
       };
+
       try {
         apply();
       } catch {
-        map!.once("load", apply);
+        // style not ready yet: try again when the map is idle
+        map.once("idle", () => {
+          if (!cancelled) apply();
+        });
       }
     }
+
     draw();
     return () => {
       cancelled = true;
     };
   }, [route]);
-  
 
   // 4. Find stops near a point and draw them
   async function showStopsNear(lat: number, lon: number, isYou: boolean) {
@@ -261,8 +289,10 @@ export default function App() {
         const el = document.createElement("div");
         el.className = "stop-marker";
         const box = document.createElement("div");
-        const popup = new maplibregl.Popup({ offset: 12, maxWidth: "280px" })
-          .setDOMContent(box);
+        const popup = new maplibregl.Popup({
+          offset: 12,
+          maxWidth: "280px",
+        }).setDOMContent(box);
         popup.on("open", () => fillPopup(s, box));
         const marker = new maplibregl.Marker({ element: el })
           .setLngLat([s.lon, s.lat])
@@ -304,9 +334,9 @@ export default function App() {
     );
   }
 
-  const routes = [
-    ...new Set(vehicles.map((v) => v.routeId).filter(Boolean)),
-  ] as string[];
+  const routes = (
+    [...new Set(vehicles.map((v) => v.routeId).filter(Boolean))] as string[]
+  ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
   return (
     <div style={{ position: "relative", height: "100%" }}>
@@ -315,9 +345,7 @@ export default function App() {
           Route:{" "}
           <select value={route} onChange={(e) => setRoute(e.target.value)}>
             <option value="all">All routes</option>
-            {routes
-              .sort((a,b) => a.localeCompare(b, undefined, {numeric: true}))
-              .map((r) => (
+            {routes.map((r) => (
               <option key={r} value={r}>
                 {r}
               </option>
@@ -328,6 +356,11 @@ export default function App() {
           <button onClick={findNearMe}>Stops near me</button>
         </div>
         {status && <div style={{ marginTop: 6 }}>{status}</div>}
+        {feedNote && (
+          <div style={{ marginTop: 6, fontSize: 12, color: "#555" }}>
+            {feedNote}
+          </div>
+        )}
         {error && <div style={{ color: "#b00020", marginTop: 6 }}>{error}</div>}
       </div>
       <div ref={mapContainer} style={{ height: "100%" }} />
