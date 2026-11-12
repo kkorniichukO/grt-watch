@@ -51,7 +51,7 @@ grt-watch/
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/grt-watch.git
+git clone https://github.com/kkorniichukO/grt-watch.git
 cd grt-watch
 
 cd server && npm install && cd ..

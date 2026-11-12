@@ -5,10 +5,11 @@ import { loadStops, nearbyStops, type Stop } from "./stops";
 import { loadSchedule, departuresAt, toSeconds, type Schedule } from "./schedule.js";
 import { loadRoutePaths, simulateBuses, type RoutePath } from "./shapes.js";
 import { fetchBuffer } from "./grtFetch.js";
+import { truncateSync } from "fs";
 
 const VEHICLES_URL =
   "https://webapps.regionofwaterloo.ca/api/grt-routes/api/vehiclepositions/2";
-const USE_MOCK = false; // set to false to use the real GRT feed
+const USE_MOCK = true; // set to false to use the real GRT feed
 const POLL_MS = USE_MOCK ? 3_000 : 15_000;
 const PORT = 3001;
 
@@ -166,7 +167,7 @@ app.get("/api/stops/nearby", (req, res) =>{
     const radius = Math.min(parseFloat((req.query.radius as string) ?? "500") || 500, 2000);
 
     if(!Number.isFinite(lat) || !Number.isFinite(lon)) {
-        res.status(400).json({ erro: "Lat and lon are required numbers"});
+        res.status(400).json({ error: "Lat and lon are required numbers"});
         return;
     }
 
