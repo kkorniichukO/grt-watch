@@ -195,6 +195,24 @@ app.get("/api/stops/:id/departures", (req, res) => {
     });
 });
 
+app.get("/api/stops/bbox", (req, res) => {
+    const west = parseFloat(String(req.query.west));
+    const south = parseFloat(String(req.query.south));
+    const east = parseFloat(String(req.query.east));
+    const north = parseFloat(String(req.query.north));
+
+    if (![west, south, east, north].every(Number.isFinite)) {
+        res.status(400).json({ error: "west, south, east and north are required numbers" });
+        return;
+    }
+
+    const LIMIT = 400;
+    const inView = stops.filter(
+        (s) => s.lon >= west && s.lon <= east && s.lat >= south && s.lat <= north
+    );
+    res.json({ truncated: inView.length > LIMIT, stops: inView.slice(0, LIMIT) });
+});
+
 app.listen(PORT, () => {
   console.log(`API running on http://localhost:${PORT}`);
   refreshVehicles();

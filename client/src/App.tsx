@@ -20,7 +20,6 @@ type Stop = {
   name: string;
   lat: number;
   lon: number;
-  distance: number;
 };
 
 type Departure = {
@@ -39,10 +38,11 @@ type DeparturesResponse = {
 const API = "http://localhost:3001/api";
 const POLL_MS = 5000;
 const WATERLOO: [number, number] = [-80.5204, 43.4643]; // [lon, lat]
+const MIN_STOP_ZOOM = 14; // stops only load when zoomed in this far
 
 // Leave empty to use today's date and time.
-// While testing with an old timetable, use: "?date=20260218&time=08:00"
-const DEPARTURES_QUERY = "?time=08:00";
+// For testing at odd hours, use: "?time=08:00"
+const DEPARTURES_QUERY = "";
 
 async function fillPopup(stop: Stop, box: HTMLElement) {
   box.replaceChildren();
@@ -85,7 +85,7 @@ export default function App() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<Map<string, maplibregl.Marker>>(new Map());
-  const stopMarkersRef = useRef<maplibregl.Marker[]>([]);
+  const stopMarkersRef = useRef<Map<string, maplibregl.Marker>>(new Map());
   const youMarkerRef = useRef<maplibregl.Marker | null>(null);
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -94,7 +94,7 @@ export default function App() {
   const [status, setStatus] = useState<string | null>(null);
   const [feedNote, setFeedNote] = useState<string | null>(null);
 
-  // 1. Create the map once
+  // 1. Create the map once, and load stops whenever the view changes
   useEffect(() => {
     if (!mapContainer.current) return;
     const map = new maplibregl.Map({
@@ -115,18 +115,91 @@ export default function App() {
           map.setLayoutProperty(layer.id, "visibility", "none");
         }
       }
-      console.log(
-        "Symbol layers:",
-        layers.filter((l) => l.type === "symbol").map((l) => l.id)
-      );
     });
+
+    // Load the stops inside the current view (only when zoomed in)
+    let requestId = 0;
+    async function loadStopsInView() {
+      const stopMarkers = stopMarkersRef.current;
+
+      if (map.getZoom() < MIN_STOP_ZOOM) {
+        stopMarkers.forEach((m) => m.remove());
+        stopMarkers.clear();
+        setStatus("Zoom in to see stops");
+        return;
+      }
+
+      const b = map.getBounds();
+      const params = new URLSearchParams({
+        west: String(b.getWest()),
+        south: String(b.getSouth()),
+        east: String(b.getEast()),
+        north: String(b.getNorth()),
+      });
+      const myRequest = ++requestId;
+
+      try {
+        const res = await fetch(`${API}/stops/bbox?${params}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data: { stops: Stop[]; truncated: boolean } = await res.json();
+        if (myRequest !== requestId) return; // a newer request replaced this one
+
+        const keepIds = new Set(data.stops.map((s) => s.id));
+
+        // remove markers that left the view
+        for (const [id, marker] of stopMarkers) {
+          if (!keepIds.has(id)) {
+            marker.remove();
+            stopMarkers.delete(id);
+          }
+        }
+
+        // add markers for new stops
+        for (const s of data.stops) {
+          if (stopMarkers.has(s.id)) continue;
+          const el = document.createElement("div");
+          el.className = "stop-marker";
+          const box = document.createElement("div");
+          const popup = new maplibregl.Popup({
+            offset: 12,
+            maxWidth: "280px",
+          }).setDOMContent(box);
+          popup.on("open", () => fillPopup(s, box));
+          const marker = new maplibregl.Marker({ element: el })
+            .setLngLat([s.lon, s.lat])
+            .setPopup(popup)
+            .addTo(map);
+          stopMarkers.set(s.id, marker);
+        }
+
+        setStatus(
+          data.truncated
+            ? "Showing the first 400 stops. Zoom in for more."
+            : `${data.stops.length} stops in view`
+        );
+      } catch {
+        if (myRequest === requestId) {
+          setStatus("Couldn't load stops. Is the server running?");
+        }
+      }
+    }
+
+    // Wait a moment after the map stops moving, so we don't spam the server
+    let timer: number | undefined;
+    const scheduleLoad = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(loadStopsInView, 300);
+    };
+    map.on("moveend", scheduleLoad);
+    map.on("load", scheduleLoad);
 
     mapRef.current = map;
     return () => {
+      window.clearTimeout(timer);
       map.remove();
       mapRef.current = null;
       markersRef.current.clear();
-      stopMarkersRef.current = [];
+      stopMarkersRef.current.clear();
     };
   }, []);
 
@@ -270,51 +343,7 @@ export default function App() {
     };
   }, [route]);
 
-  // 4. Find stops near a point and draw them
-  async function showStopsNear(lat: number, lon: number, isYou: boolean) {
-    const map = mapRef.current;
-    if (!map) return;
-
-    try {
-      const res = await fetch(
-        `${API}/stops/nearby?lat=${lat}&lon=${lon}&radius=600`
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: { stops: Stop[] } = await res.json();
-
-      stopMarkersRef.current.forEach((m) => m.remove());
-      stopMarkersRef.current = [];
-
-      for (const s of data.stops) {
-        const el = document.createElement("div");
-        el.className = "stop-marker";
-        const box = document.createElement("div");
-        const popup = new maplibregl.Popup({
-          offset: 12,
-          maxWidth: "280px",
-        }).setDOMContent(box);
-        popup.on("open", () => fillPopup(s, box));
-        const marker = new maplibregl.Marker({ element: el })
-          .setLngLat([s.lon, s.lat])
-          .setPopup(popup)
-          .addTo(map);
-        stopMarkersRef.current.push(marker);
-      }
-
-      if (isYou) {
-        youMarkerRef.current?.remove();
-        youMarkerRef.current = new maplibregl.Marker({ color: "#16a34a" })
-          .setLngLat([lon, lat])
-          .addTo(map);
-      }
-
-      map.flyTo({ center: [lon, lat], zoom: 15 });
-      setStatus(`${data.stops.length} stops within 600 m`);
-    } catch {
-      setStatus("Couldn't load stops. Is the server running with GTFS data?");
-    }
-  }
-
+  // Move the map to the user's location. Stops load by themselves afterwards.
   function findNearMe() {
     setStatus("Finding your location...");
     if (!navigator.geolocation) {
@@ -322,15 +351,17 @@ export default function App() {
       return;
     }
     navigator.geolocation.getCurrentPosition(
-      (pos) => showStopsNear(pos.coords.latitude, pos.coords.longitude, true),
-      () => {
-        // fall back to the centre of the map if location is denied
-        const c = mapRef.current?.getCenter();
-        if (c) {
-          setStatus("Location denied, using map centre...");
-          showStopsNear(c.lat, c.lng, false);
-        }
-      }
+      (pos) => {
+        const map = mapRef.current;
+        if (!map) return;
+        const lngLat: [number, number] = [pos.coords.longitude, pos.coords.latitude];
+        youMarkerRef.current?.remove();
+        youMarkerRef.current = new maplibregl.Marker({ color: "#16a34a" })
+          .setLngLat(lngLat)
+          .addTo(map);
+        map.flyTo({ center: lngLat, zoom: 16 });
+      },
+      () => setStatus("Location denied. Zoom in on the map to see stops.")
     );
   }
 
@@ -353,7 +384,7 @@ export default function App() {
           </select>
         </label>
         <div>
-          <button onClick={findNearMe}>Stops near me</button>
+          <button onClick={findNearMe}>Go to my location</button>
         </div>
         {status && <div style={{ marginTop: 6 }}>{status}</div>}
         {feedNote && (
